@@ -42,6 +42,7 @@ project_name = "KMC_V3.6"
 max_num_KMC = 500
 max_num_jumps = 100000
 parallelization = False
+use_C = True
 ####################################
 
 print("...Making the fisrt stable structure with Monte Carlo simulation...")
@@ -50,8 +51,8 @@ complete = subprocess.run(["python", "monte_carlo.py"],
 
 print("stdout", complete.stdout)
 atoms = read(filename='stable_config_initial_ensemble_0.xsf')
-# atoms = read(filename='stable_config_initial.xsf')
 
+# atoms = read(filename='stable_config_initial_ensemble_0.8.xsf')
 ######### NOTE: Initializing the structure #########
 
 
@@ -70,6 +71,9 @@ def taging_initial_config(atoms):
 taging_initial_config(atoms)
 print("Initialization...taging done...")
 
+if use_C == True:
+    print("Compiling the C++ code..")
+    os.system("g++ main.cpp -o neighbors_by_C")
 
 count = count_atoms(atoms)
 number_of_Li = count['Li']
@@ -428,7 +432,7 @@ def update_all_rates(atoms, temp, initial_position_energy, jumped_atom_tag, list
 
     row_to_delete = []
     for atom in upading_atoms:
-        row = np.where(np.array(list_all_rates[:,2])==atom.tag)
+        row = np.where(np.array(list_all_rates[:, 2]) == atom.tag)
         row_to_delete.extend(list(row[0]))
     # print("row_to_delete:", row_to_delete)
     reduced_list_all_rates = np.delete(
@@ -492,6 +496,11 @@ for ensemble in range(number_of_ensembles):
         arr = np.append(
             arr, [[atom.symbol, atom.position[0], atom.position[1], atom.position[2], atom.tag, atom.index]], axis=0)
 
+    with open(f"atoms_list_c_code.csv", "w") as file:
+        writer = csv.writer(file)
+        for row in arr:
+            writer.writerow(row)
+
     with open(f"initial_ensemble_{ensemble}.csv", "w") as file:
         writer = csv.writer(file)
         for row in arr:
@@ -511,19 +520,36 @@ for ensemble in range(number_of_ensembles):
         writer = csv.writer(file)
         writer.writerow(first_row)
 
-    initial_time0 = t.time()
-    print(f"Making neighbors DataFrame for ensemble_{ensemble}...")
+    # NOTE: In this neighbors_c_code.csv file the selected atom in printed in the single row, and its neighbors are printed in the next row
     all_neighbors_dict = {}
-    for atom in atoms:
-        if atom.symbol == 'Li' or atom.symbol == 'X':
-            nearest_atom_object = find_nearest_neighbor(atoms, atom)
-            nearest_atom_object.extend([None]*(6-len(nearest_atom_object)))
-            all_neighbors_dict[atom.tag] = nearest_atom_object
-    all_neighbors_DataFrane = pd.DataFrame(all_neighbors_dict)
-    print("Time to get DataFrame: ", t.time() - initial_time0)
-    # pd.set_option('max_columns', None)
-    # pd.set_option('display.max_colwidth',500)
-    # display(all_neighbors_DataFrane)
+    initial_time = t.time()
+    if use_C == True:
+        os.system("./neighbors_by_C")
+        all_row = []
+        with open("neighbors_c_code.csv") as file:
+            reader = csv.reader(file)
+            for row_ in reader:
+                all_row.append(row_)
+        for row in range(len(all_row)-1):
+            if all_row[row][0] == "Selected_atom:":
+                selected_atom = atoms[int(all_row[row][1])]
+                nearest_atom_object = []
+                for neighbors in all_row[row+1]:
+                    nearest_atom_object.append(atoms[int(neighbors)])
+                nearest_atom_object.extend([None]*(6-len(nearest_atom_object)))
+                all_neighbors_dict[selected_atom.tag] = nearest_atom_object
+            else:
+                pass
+        all_neighbors_DataFrane = pd.DataFrame(all_neighbors_dict)
+        print("Time to get DataFrame: ", t.time() - initial_time)
+    else:
+        for atom in atoms:
+            if atom.symbol == 'Li' or atom.symbol == 'X':
+                nearest_atom_object = find_nearest_neighbor(atoms, atom)
+                nearest_atom_object.extend([None]*(6-len(nearest_atom_object)))
+                all_neighbors_dict[atom.tag] = nearest_atom_object
+        all_neighbors_DataFrane = pd.DataFrame(all_neighbors_dict)
+        print("Time to get DataFrame: ", t.time() - initial_time)
 
     system_changes = None
     new_energy = calc.get_energy_given_change(system_changes)
@@ -645,7 +671,8 @@ for ensemble in range(number_of_ensembles):
             print("kmcs:", kmcs)
             print("jump_count:", jump_count)
             print(" ")
-            print(f"writing the final_ensemble_{ensemble}.csv and structure_final_{ensemble}.xsf files... ")
+            print(
+                f"writing the final_ensemble_{ensemble}.csv and structure_final_{ensemble}.xsf files... ")
             arr_final = np.empty((0, 6), dtype=object)
             for atom in atoms:
                 arr_final = np.append(
